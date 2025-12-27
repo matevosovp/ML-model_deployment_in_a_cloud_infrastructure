@@ -151,9 +151,48 @@ Prometheus: http://localhost:9090
 
 Grafana: http://localhost:3000
 
+### Чтобы увидеть веб-интерфейс Prometheus и Grafana, нужно перенаправить порт с ВМ, на которой вы работаете, на ваш компьютер. Сделать это можно с помощью VS Code: откройте вкладку PORTS и введите порт Prometheus 9090 (3000 для Grafana). 
+
+
 ### Пример curl-запроса к микросервису
-
-
+```bash
+curl -s -X POST "http://localhost:8002/predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": 123,
+    "features": {
+      "floor": 12,
+      "kitchen_area": 13.8,
+      "living_area": 41.2,
+      "total_area": 62.0,
+      "build_year": 2015,
+      "latitude": 59.9343,
+      "longitude": 30.3351,
+      "ceiling_height": 2.85,
+      "floors_total": 25,
+      "area_per_room": 20.67,
+      "is_first_floor": 0,
+      "building_age": 10,
+      "is_apartment": 1,
+      "ce__building_type_int": 3,
+      "building_age*latitude": 599.343,
+      "build_year*building_age": 20150,
+      "ce__building_type_int*has_elevator": 3,
+      "latitude*longitude": 1817.031,
+      "building_age*longitude": 303.351,
+      "floors_total*longitude": 758.3775,
+      "build_year*floors_total": 50375,
+      "ceiling_height*latitude": 170.812,
+      "build_year*rooms": 6045,
+      "is_first_floor*total_area": 0.0,
+      "rooms*total_area": 186.0,
+      "build_year*living_area": 83018.0,
+      "ceiling_height*longitude": 86.455,
+      "ceiling_height*floors_total": 71.25,
+      "has_elevator*is_first_floor": 0
+    }
+  }'
+```
 #### Проверка, что Prometheus видит сервис:
 ```bash
 curl -s "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
