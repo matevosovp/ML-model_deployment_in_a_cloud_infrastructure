@@ -82,6 +82,9 @@ bash run_stage2_docker.sh
 # команда для остановки микросервиса в режиме docker 
 docker stop real-estate-ml-service
 ```
+После запуска:
+- Swagger UI: http://localhost:8001/docs
+- Healthcheck: http://localhost:8001/service-status
 
 ### Пример curl-запроса к микросервису
 
@@ -128,7 +131,7 @@ curl -s -X POST "http://localhost:8000/predict" \
 
 ```bash
 # команда перехода в нужную директорию
-
+cd services
 # команда для запуска микросервиса в режиме docker compose
 docker compose down
 docker compose up --build

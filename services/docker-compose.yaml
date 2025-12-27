@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile_ml_service
     env_file:
-      - services/.env
+      - .env
     ports:
       - "8002:8000"
     restart: unless-stopped
@@ -12,7 +12,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     depends_on:
@@ -22,7 +22,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     env_file:
-      - services/.env
+      - .env
     ports:
       - "3000:3000"
     depends_on:
