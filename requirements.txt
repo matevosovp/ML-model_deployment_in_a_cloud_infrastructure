@@ -10,7 +10,8 @@ catboost
 sqlalchemy
 psycopg2-binary
 pytest
-
+boto3
+botocore
 pyyaml
 
 logging.config
