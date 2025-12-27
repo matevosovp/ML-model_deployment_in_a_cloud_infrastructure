@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-PORT="${PORT:-8000}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${APP_HOST:-0.0.0.0}"
+PORT="${APP_PORT_STAGE1:-8000}"
 
 echo "Starting uvicorn on ${HOST}:${PORT}"
 echo "Open: http://localhost:${PORT}/docs"
 
-uvicorn services.ml_service.main:app --host "$HOST" --port "$PORT" --reload
+python3 -m uvicorn ml_service.main:app --host "${HOST}" --port "${PORT}" --reload

@@ -1,10 +1,8 @@
 from __future__ import annotations
-
 import os
 import time
 import logging
 from typing import Any, Dict, Union
-
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -13,6 +11,22 @@ import joblib
 from catboost import CatBoostRegressor
 from fastapi import Body
 from prometheus_fastapi_instrumentator import Instrumentator
+import time
+from prometheus_client import Counter, Histogram
+
+
+PREDICT_LATENCY_SECONDS = Histogram(
+    "predict_latency_seconds",
+    "Latency of /predict endpoint in seconds"
+)
+
+POSITIVE_PREDICTIONS_TOTAL = Counter(
+    "positive_predictions_total",
+    "Number of positive predictions (prediction > 0)"
+)
+
+
+
 
 MODEL_FILENAME = "Sprint2_cb.pkl"
 
@@ -242,12 +256,19 @@ def predict(
         else:
             pred_value = float(y_pred)
 
+        # Этап 4: обновляем метрики Prometheus
+        PREDICT_LATENCY_SECONDS.observe(latency)
+        if pred_value > 0:
+            POSITIVE_PREDICTIONS_TOTAL.inc()
+
+
         logger.info(
             "Predicted user_id=%s prediction=%.6f latency=%.6fs",
             req.user_id,
             pred_value,
             latency,
         )
+
 
         return PredictResponse(user_id=req.user_id, prediction=pred_value)
 

@@ -15,7 +15,7 @@ source .venv/bin/activate
 cd services
 # и установки необходимых библиотек в него
 
-pip install -r ml_service/requirements.txt
+python3 -m pip install -r ml_service/requirements.txt
 # команда запуска сервиса с помощью uvicorn
 bash run_stage1.sh
 ```
@@ -139,22 +139,38 @@ docker compose up --build
 
 ```
 
+Адреса:
+
+Микросервис: http://localhost:8002
+
+Swagger: http://localhost:8002/docs
+
+Метрики: http://localhost:8002/metrics
+
+Prometheus: http://localhost:9090
+
+Grafana: http://localhost:3000
+
 ### Пример curl-запроса к микросервису
 
+
+#### Проверка, что Prometheus видит сервис:
 ```bash
-curl -X 'POST' \
-  'http://localhost:
-```
+curl -s "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
 
+```
+#### Проверка, что метрики доступны:
+```bash
+curl -s http://127.0.0.1:8002/metrics | head -n 20
+```
 ## 4. Скрипт симуляции нагрузки
-Скрипт генерирует <...> запросов в течение <...> секунд ...
+Скрипт 40 раз с паузой 2 секунды отправляет GET-запросы на /predict с параметрами x=0..39 и y=-16, делая дополнительную паузу 30 секунд на 30-й итерации.
+
+### команды необходимые для запуска скрипта
+
+```bash
+cd services
+python3 test_requests_2.py
+python3 test_requests_1.py
 
 ```
-# команды необходимые для запуска скрипта
-...
-```
-
-Адреса сервисов:
-- микросервис: http://localhost:<port>
-- Prometheus: ...
-- Grafana: ...
