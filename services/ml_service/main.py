@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 from pathlib import Path
 import joblib
 from catboost import CatBoostRegressor
-
+from fastapi import Body
+from prometheus_fastapi_instrumentator import Instrumentator
 
 MODEL_FILENAME = "Sprint2_cb.pkl"
 
@@ -123,6 +124,12 @@ app = FastAPI(
     description="Онлайн сервис предсказания цены недвижимости",
 )
 
+Instrumentator().instrument(app).expose(
+    app,
+    endpoint="/metrics",
+    include_in_schema=False,
+)
+
 BASE_DIR = Path(__file__).resolve().parents[1]  # папка services/
 DEFAULT_MODEL_PATH = BASE_DIR / "models" / MODEL_FILENAME
 MODEL_PATH = os.getenv("MODEL_PATH", str(DEFAULT_MODEL_PATH))
@@ -157,7 +164,50 @@ def health_check() -> Dict[str, str]:
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest) -> PredictResponse:
+def predict(
+    req: PredictRequest = Body(
+        ...,
+        examples={
+            "valid_request": {
+                "summary": "Пример корректного запроса",
+                "value": {
+                    "user_id": 123,
+                    "features": {
+                        "floor": 12,
+                        "kitchen_area": 13.8,
+                        "living_area": 41.2,
+                        "total_area": 62.0,
+                        "build_year": 2015,
+                        "latitude": 59.9343,
+                        "longitude": 30.3351,
+                        "ceiling_height": 2.85,
+                        "floors_total": 25,
+                        "area_per_room": 20.67,
+                        "is_first_floor": 0,
+                        "building_age": 10,
+                        "is_apartment": 1,
+                        "ce__building_type_int": 3,
+                        "building_age*latitude": 599.343,
+                        "build_year*building_age": 20150,
+                        "ce__building_type_int*has_elevator": 3,
+                        "latitude*longitude": 1817.031,
+                        "building_age*longitude": 303.351,
+                        "floors_total*longitude": 758.3775,
+                        "build_year*floors_total": 50375,
+                        "ceiling_height*latitude": 170.812,
+                        "build_year*rooms": 6045,
+                        "is_first_floor*total_area": 0.0,
+                        "rooms*total_area": 186.0,
+                        "build_year*living_area": 83018.0,
+                        "ceiling_height*longitude": 86.455,
+                        "ceiling_height*floors_total": 71.25,
+                        "has_elevator*is_first_floor": 0
+                    }
+                },
+            }
+        },
+    )
+):
     model = getattr(app.state, "model", None)
     if model is None:
         raise HTTPException(status_code=500, detail="Model is not loaded")
