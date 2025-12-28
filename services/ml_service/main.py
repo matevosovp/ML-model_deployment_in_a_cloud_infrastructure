@@ -1,23 +1,24 @@
 from __future__ import annotations
-import os
+
 import time
 import logging
-from typing import Any, Dict, Union
-import pandas as pd
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 from pathlib import Path
+from typing import Any, Dict, Union
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Body
+from pydantic import BaseModel, Field
 import joblib
 from catboost import CatBoostRegressor
-from fastapi import Body
 from prometheus_fastapi_instrumentator import Instrumentator
-import time
 from prometheus_client import Counter, Histogram
+
+from .config import MODEL_PATH, LOG_LEVEL, REQUIRED_FEATURES
 
 
 PREDICT_LATENCY_SECONDS = Histogram(
     "predict_latency_seconds",
-    "Latency of /predict endpoint in seconds"
+    "Latency of model prediction in seconds"
 )
 
 POSITIVE_PREDICTIONS_TOTAL = Counter(
@@ -26,61 +27,22 @@ POSITIVE_PREDICTIONS_TOTAL = Counter(
 )
 
 
-
-
-MODEL_FILENAME = "Sprint2_cb.pkl"
-
 logger = logging.getLogger("ml_service")
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(level=LOG_LEVEL)
 
-REQUIRED_FEATURES = [
-    "floor",
-    "kitchen_area",
-    "living_area",
-    "total_area",
-    "build_year",
-    "latitude",
-    "longitude",
-    "ceiling_height",
-    "floors_total",
-    "area_per_room",
-    "is_first_floor",
-    "building_age",
-    "is_apartment",
-    "ce__building_type_int",
-    "building_age*latitude",
-    "build_year*building_age",
-    "ce__building_type_int*has_elevator",
-    "latitude*longitude",
-    "building_age*longitude",
-    "floors_total*longitude",
-    "build_year*floors_total",
-    "ceiling_height*latitude",
-    "build_year*rooms",
-    "is_first_floor*total_area",
-    "rooms*total_area",
-    "build_year*living_area",
-    "ceiling_height*longitude",
-    "ceiling_height*floors_total",
-    "has_elevator*is_first_floor",
-]
 
-def load_model(model_path: str) -> Any:
-    if not os.path.exists(model_path):
+def load_model(model_path: Path) -> Any:
+    if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    ext = os.path.splitext(model_path)[1].lower()
+    ext = model_path.suffix.lower()
 
     if ext in [".pkl", ".joblib"]:
-        if joblib is None:
-            raise RuntimeError("joblib is not installed but model file is .pkl or .joblib")
         return joblib.load(model_path)
 
     if ext == ".cbm":
-        if CatBoostRegressor is None:
-            raise RuntimeError("catboost is not installed but model file is .cbm")
         model = CatBoostRegressor()
-        model.load_model(model_path)
+        model.load_model(str(model_path))
         return model
 
     raise RuntimeError(f"Unsupported model extension: {ext}")
@@ -144,16 +106,13 @@ Instrumentator().instrument(app).expose(
     include_in_schema=False,
 )
 
-BASE_DIR = Path(__file__).resolve().parents[1]  # папка services/
-DEFAULT_MODEL_PATH = BASE_DIR / "models" / MODEL_FILENAME
-MODEL_PATH = os.getenv("MODEL_PATH", str(DEFAULT_MODEL_PATH))
-
 
 @app.on_event("startup")
 def startup_event() -> None:
     try:
         model = load_model(MODEL_PATH)
 
+        # Если это MLflow PyFuncModel, добавляем служебный id (не критично, но удобно)
         try:
             if model.__class__.__name__ == "PyFuncModel" and model.__class__.__module__.startswith("mlflow"):
                 if not hasattr(model, "_model_id"):
@@ -171,6 +130,7 @@ def startup_event() -> None:
 @app.get("/")
 def root():
     return {"message": "Service is up. Open /docs or /service-status."}
+
 
 @app.get("/service-status")
 def health_check() -> Dict[str, str]:
@@ -229,7 +189,6 @@ def predict(
     if not req.features:
         raise HTTPException(status_code=400, detail="features must be non-empty")
 
-    # Проверяем, что набор фичей ровно такой, как ожидает модель
     missing = [c for c in REQUIRED_FEATURES if c not in req.features]
     extra = [c for c in req.features.keys() if c not in REQUIRED_FEATURES]
 
@@ -244,7 +203,6 @@ def predict(
         )
 
     try:
-        # Собираем DataFrame строго в нужном порядке колонок
         x = pd.DataFrame([req.features], columns=REQUIRED_FEATURES)
 
         t0 = time.perf_counter()
@@ -256,11 +214,9 @@ def predict(
         else:
             pred_value = float(y_pred)
 
-        # Этап 4: обновляем метрики Prometheus
         PREDICT_LATENCY_SECONDS.observe(latency)
         if pred_value > 0:
             POSITIVE_PREDICTIONS_TOTAL.inc()
-
 
         logger.info(
             "Predicted user_id=%s prediction=%.6f latency=%.6fs",
@@ -268,7 +224,6 @@ def predict(
             pred_value,
             latency,
         )
-
 
         return PredictResponse(user_id=req.user_id, prediction=pred_value)
 
@@ -281,4 +236,3 @@ def predict(
                 f"Error: {type(e).__name__}: {e}"
             ),
         )
-
