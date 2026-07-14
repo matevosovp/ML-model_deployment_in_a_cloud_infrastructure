@@ -1,217 +1,143 @@
-# Инструкции по запуску микросервиса
+# Инструкция по запуску
 
-Каждая инструкция выполняется из директории репозитория mle-sprint3-completed
-Если необходимо перейти в поддиректорию, напишите соотвесвтующую команду
+Все команды выполняются из корня репозитория, если не указано иное.
 
-bucket = s3-student-mle-20251010-5a382f9c3d
-## 1. FastAPI микросервис в виртуальном окружение
+## Требования
+
+- Python 3.11;
+- Docker с плагином Docker Compose;
+- модель `services/models/Sprint2_cb.pkl` либо собственный совместимый `.pkl`, `.joblib` или `.cbm`.
+
+## Подготовка окружения
+
 ```bash
-# команды создания виртуального окружения
-sudo apt-get update
-sudo apt-get install python3.10-venv
-python3 -m venv .venv
-source .venv/bin/activate
-# Перейти в папку
 cd services
-# и установки необходимых библиотек в него
+cp .env.example .env
+```
 
-python3 -m pip install -r ml_service/requirements.txt
-# команда запуска сервиса с помощью uvicorn
+Перед запуском:
+
+- проверьте `MODEL_PATH` и `MODEL_FILENAME`;
+- обязательно замените `GRAFANA_PASS`;
+- не добавляйте `.env` в Git.
+
+## 1. Локальный FastAPI
+
+```bash
+python3.11 -m venv ../.venv
+source ../.venv/bin/activate
+pip install -r ml_service/requirements.txt
+
 bash run_stage1.sh
-```
-После запуска:
-- Swagger UI: http://localhost:8000/docs
-- Healthcheck: http://localhost:8000/service-status
-
-
-### Пример curl-запроса к микросервису
-
-```bash
-
-curl -s -X POST "http://localhost:8000/predict" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 123,
-    "features": {
-      "floor": 12,
-      "kitchen_area": 13.8,
-      "living_area": 41.2,
-      "total_area": 62.0,
-      "build_year": 2015,
-      "latitude": 59.9343,
-      "longitude": 30.3351,
-      "ceiling_height": 2.85,
-      "floors_total": 25,
-      "area_per_room": 20.67,
-      "is_first_floor": 0,
-      "building_age": 10,
-      "is_apartment": 1,
-      "ce__building_type_int": 3,
-      "building_age*latitude": 599.343,
-      "build_year*building_age": 20150,
-      "ce__building_type_int*has_elevator": 3,
-      "latitude*longitude": 1817.031,
-      "building_age*longitude": 303.351,
-      "floors_total*longitude": 758.3775,
-      "build_year*floors_total": 50375,
-      "ceiling_height*latitude": 170.812,
-      "build_year*rooms": 6045,
-      "is_first_floor*total_area": 0.0,
-      "rooms*total_area": 186.0,
-      "build_year*living_area": 83018.0,
-      "ceiling_height*longitude": 86.455,
-      "ceiling_height*floors_total": 71.25,
-      "has_elevator*is_first_floor": 0
-    }
-  }' \
-  -w "\nHTTP %{http_code}\n"
-
-```
-
-
-## 2. FastAPI микросервис в Docker-контейнере
-
-```bash
-# Перейти в папку
-cd services
-# команда для поднятия микросервиса в режиме docker 
-docker build -t real-estate-ml-service -f Dockerfile_ml_service .
-
-# Запуск
-bash run_stage2_docker.sh
-# команда для остановки микросервиса в режиме docker 
-docker stop real-estate-ml-service
-```
-После запуска:
-- Swagger UI: http://localhost:8001/docs
-- Healthcheck: http://localhost:8001/service-status
-
-### Пример curl-запроса к микросервису
-
-```bash
-curl -s -X POST "http://localhost:8001/predict" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 123,
-    "features": {
-      "floor": 12,
-      "kitchen_area": 13.8,
-      "living_area": 41.2,
-      "total_area": 62.0,
-      "build_year": 2015,
-      "latitude": 59.9343,
-      "longitude": 30.3351,
-      "ceiling_height": 2.85,
-      "floors_total": 25,
-      "area_per_room": 20.67,
-      "is_first_floor": 0,
-      "building_age": 10,
-      "is_apartment": 1,
-      "ce__building_type_int": 3,
-      "building_age*latitude": 599.343,
-      "build_year*building_age": 20150,
-      "ce__building_type_int*has_elevator": 3,
-      "latitude*longitude": 1817.031,
-      "building_age*longitude": 303.351,
-      "floors_total*longitude": 758.3775,
-      "build_year*floors_total": 50375,
-      "ceiling_height*latitude": 170.812,
-      "build_year*rooms": 6045,
-      "is_first_floor*total_area": 0.0,
-      "rooms*total_area": 186.0,
-      "build_year*living_area": 83018.0,
-      "ceiling_height*longitude": 86.455,
-      "ceiling_height*floors_total": 71.25,
-      "has_elevator*is_first_floor": 0
-    }
-  }' \
-  -w "\nHTTP %{http_code}\n"
-
-```
-
-## 3. Docker compose для микросервиса и системы моониторинга
-
-```bash
-# команда перехода в нужную директорию
-cd services
-# команда для запуска микросервиса в режиме docker compose
-docker compose down
-docker compose up --build
-
-
 ```
 
 Адреса:
 
-Микросервис: http://localhost:8002
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- readiness: `http://127.0.0.1:8000/service-status`
+- метрики: `http://127.0.0.1:8000/metrics`
 
-Swagger: http://localhost:8002/docs
+Проверка валидным запросом:
 
-Метрики: http://localhost:8002/metrics
-
-Prometheus: http://localhost:9090
-
-Grafana: http://localhost:3000
-
-### Чтобы увидеть веб-интерфейс Prometheus и Grafana, нужно перенаправить порт с ВМ, на которой вы работаете, на ваш компьютер. Сделать это можно с помощью VS Code: откройте вкладку PORTS и введите порт Prometheus 9090 (3000 для Grafana). 
-
-
-### Пример curl-запроса к микросервису
 ```bash
-curl -s -X POST "http://localhost:8002/predict" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": 123,
-    "features": {
-      "floor": 12,
-      "kitchen_area": 13.8,
-      "living_area": 41.2,
-      "total_area": 62.0,
-      "build_year": 2015,
-      "latitude": 59.9343,
-      "longitude": 30.3351,
-      "ceiling_height": 2.85,
-      "floors_total": 25,
-      "area_per_room": 20.67,
-      "is_first_floor": 0,
-      "building_age": 10,
-      "is_apartment": 1,
-      "ce__building_type_int": 3,
-      "building_age*latitude": 599.343,
-      "build_year*building_age": 20150,
-      "ce__building_type_int*has_elevator": 3,
-      "latitude*longitude": 1817.031,
-      "building_age*longitude": 303.351,
-      "floors_total*longitude": 758.3775,
-      "build_year*floors_total": 50375,
-      "ceiling_height*latitude": 170.812,
-      "build_year*rooms": 6045,
-      "is_first_floor*total_area": 0.0,
-      "rooms*total_area": 186.0,
-      "build_year*living_area": 83018.0,
-      "ceiling_height*longitude": 86.455,
-      "ceiling_height*floors_total": 71.25,
-      "has_elevator*is_first_floor": 0
-    }
-  }'
+python load_test.py --url http://127.0.0.1:8000/predict --requests 1
 ```
-#### Проверка, что Prometheus видит сервис:
-```bash
-curl -s "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
 
-```
-#### Проверка, что метрики доступны:
-```bash
-curl -s http://127.0.0.1:8002/metrics | head -n 20
-```
-## 4. Скрипт симуляции нагрузки
-Скрипт 40 раз с паузой 2 секунды отправляет GET-запросы на /predict с параметрами x=0..39 и y=-16, делая дополнительную паузу 30 секунд на 30-й итерации.
-
-### команды необходимые для запуска скрипта
+## 2. Отдельный Docker-контейнер
 
 ```bash
 cd services
-python3 test_requests_2.py
-python3 test_requests_1.py
+bash run_stage2_docker.sh
+```
 
+Сервис будет доступен на `http://127.0.0.1:8001`. Скрипт самостоятельно проверит наличие `.env`, соберёт образ и запустит контейнер с непривилегированной привязкой к localhost.
+
+Остановка выполняется через `Ctrl+C`, поскольку контейнер запускается с `--rm`.
+
+## 3. Полный observability-контур
+
+```bash
+cd services
+docker compose up --build -d
+docker compose ps
+```
+
+Компоненты:
+
+| Компонент | Адрес |
+|---|---|
+| FastAPI | `http://127.0.0.1:8002` |
+| Swagger | `http://127.0.0.1:8002/docs` |
+| Prometheus | `http://127.0.0.1:9090` |
+| Grafana | `http://127.0.0.1:3000` |
+
+Prometheus datasource и dashboard загружаются в Grafana автоматически из `services/grafana/provisioning` и корневого `dashboard.json`.
+
+Проверки:
+
+```bash
+curl --fail http://127.0.0.1:8002/service-status
+curl --fail http://127.0.0.1:8002/metrics
+curl --fail "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
+```
+
+## Нагрузочная проверка
+
+```bash
+cd services
+python load_test.py --requests 40 --delay 0.25
+```
+
+Скрипт отправляет корректные POST-запросы к `/predict`, выводит status и latency каждого запроса, а в конце считает mean, p50 и p95. Наличие неуспешных ответов приводит к ненулевому exit code.
+
+Параметры:
+
+```text
+--url       endpoint предсказания
+--requests  число запросов
+--delay     пауза между запросами в секундах
+--timeout   timeout одного запроса
+```
+
+## Остановка
+
+```bash
+cd services
+docker compose down
+```
+
+Для удаления сохранённого состояния контейнеров используйте `docker compose down --volumes` только осознанно.
+
+## Типовые проблемы
+
+### Модель не загружается
+
+Проверьте:
+
+- существует ли файл по `MODEL_PATH`;
+- совпадают ли версии scikit-learn, CatBoost и category-encoders с [requirements](services/ml_service/requirements.txt);
+- доступен ли файл пользователю `app` внутри контейнера.
+
+### API отвечает 422
+
+Сервис строго проверяет список признаков. Используйте payload из `services/load_test.py` как эталон контракта.
+
+### Prometheus не видит сервис
+
+```bash
+cd services
+docker compose ps
+docker compose logs ml_service prometheus
+```
+
+В Prometheus запрос `up{job="ml_service"}` должен вернуть `1`.
+
+### Grafana не показывает dashboard
+
+Проверьте логи и provisioning volumes:
+
+```bash
+cd services
+docker compose logs grafana
+docker compose config
 ```
