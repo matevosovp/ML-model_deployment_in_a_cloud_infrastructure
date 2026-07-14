@@ -74,13 +74,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "process_cpu_seconds_total{}",
+          "expr": "rate(process_cpu_seconds_total[1m]) * 100",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "CPU load",
+      "title": "CPU usage (1m rate)",
       "type": "gauge"
     },
     {
@@ -168,13 +168,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "http_request_duration_seconds_count{}",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Requests duration Продолжительность запросов",
+      "title": "API p95 latency",
       "type": "timeseries"
     },
     {
@@ -262,13 +262,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(http_requests_total{status=~\"4xx|5xx\"}[1m]))",
+          "expr": "sum(rate(http_requests_total{status=~\"4xx|5xx\"}[5m]))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Ошибки 4xx/5xx",
+      "title": "4xx/5xx error rate",
       "type": "timeseries"
     },
     {
@@ -396,7 +396,7 @@
           "refId": "A"
         }
       ],
-      "title": "Time Series Запросов в секунду",
+      "title": "Requests per second",
       "type": "timeseries"
     },
     {
@@ -455,19 +455,23 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "http_requests_total{}",
+          "expr": "sum(http_requests_total)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Total requests Кол-во запросов",
+      "title": "Total requests",
       "type": "stat"
     }
   ],
   "preload": false,
   "schemaVersion": 42,
-  "tags": [],
+  "tags": [
+    "ml",
+    "fastapi",
+    "prometheus"
+  ],
   "templating": {
     "list": []
   },
@@ -477,7 +481,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Dashing",
+  "title": "Real Estate ML Service",
   "uid": "adjfzwb",
   "version": 4
 }
