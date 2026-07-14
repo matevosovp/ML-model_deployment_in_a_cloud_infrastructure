@@ -21,9 +21,9 @@ PREDICT_LATENCY_SECONDS = Histogram(
     "Latency of model prediction in seconds"
 )
 
-POSITIVE_PREDICTIONS_TOTAL = Counter(
-    "positive_predictions_total",
-    "Number of positive predictions (prediction > 0)"
+PREDICTIONS_TOTAL = Counter(
+    "model_predictions_total",
+    "Number of successful model predictions",
 )
 
 
@@ -133,8 +133,13 @@ def root():
 
 
 @app.get("/service-status")
-def health_check() -> Dict[str, str]:
-    return {"status": "ok"}
+def health_check() -> Dict[str, Union[str, bool]]:
+    model_loaded = getattr(app.state, "model", None) is not None
+    return {
+        "status": "ok" if model_loaded else "not_ready",
+        "model_loaded": model_loaded,
+        "model_file": MODEL_PATH.name,
+    }
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -215,8 +220,7 @@ def predict(
             pred_value = float(y_pred)
 
         PREDICT_LATENCY_SECONDS.observe(latency)
-        if pred_value > 0:
-            POSITIVE_PREDICTIONS_TOTAL.inc()
+        PREDICTIONS_TOTAL.inc()
 
         logger.info(
             "Predicted user_id=%s prediction=%.6f latency=%.6fs",
@@ -227,12 +231,9 @@ def predict(
 
         return PredictResponse(user_id=req.user_id, prediction=pred_value)
 
-    except Exception as e:
+    except Exception as exc:
         logger.exception("Prediction failed")
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "Prediction failed. Check feature names and types. "
-                f"Error: {type(e).__name__}: {e}"
-            ),
-        )
+            status_code=500,
+            detail="Prediction failed inside the model service",
+        ) from exc
