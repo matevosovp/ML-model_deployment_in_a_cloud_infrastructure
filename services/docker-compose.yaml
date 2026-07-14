@@ -6,31 +6,36 @@ services:
     env_file:
       - .env
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
     restart: unless-stopped
-    hostname: fastapi_app
+    security_opt:
+      - no-new-privileges:true
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.54.1
     command:
-    - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--config.file=/etc/prometheus/prometheus.yml"
     volumes:
-    - "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
     ports:
-    - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
-    - ml_service
+      ml_service:
+        condition: service_healthy
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:12.3.1
     env_file:
       - .env
-    ports:
-      - "3000:3000"
     environment:
-        - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
-        - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS}
+    volumes:
+      - "./grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "../dashboard.json:/var/lib/grafana/dashboards/real-estate-service.json:ro"
+    ports:
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
