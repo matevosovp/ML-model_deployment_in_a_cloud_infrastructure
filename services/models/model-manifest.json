@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "artifact": "Sprint2_cb.cbm",
+  "model_version": "sprint2-catboost-2025-12-27",
+  "feature_contract": "engineered-real-estate-v1",
+  "sha256": "b623ad39f6a19b1aedcc508ae3cd31b74928e9f99a9eaea1765e33c720b750da"
+}

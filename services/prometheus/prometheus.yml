@@ -1,5 +1,6 @@
 global:
   scrape_interval: 5s
+  evaluation_interval: 15s
 
 scrape_configs:
   - job_name: "ml_service"
@@ -7,3 +8,5 @@ scrape_configs:
     scheme: http
     static_configs:
       - targets: ["ml_service:8000"]
+        labels:
+          service: "real-estate-ml"

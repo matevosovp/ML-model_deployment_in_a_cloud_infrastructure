@@ -1,68 +1,58 @@
 # Инструкция по запуску
 
-Все команды выполняются из корня репозитория, если не указано иное.
-
 ## Требования
 
-- Python 3.11;
-- Docker с плагином Docker Compose;
-- модель `services/models/Sprint2_cb.pkl` либо собственный совместимый `.pkl`, `.joblib` или `.cbm`.
+- Python 3.12 для локальной разработки;
+- Docker с Docker Compose для воспроизводимого запуска;
+- доверенный model artifact и соответствующий ему manifest.
 
-## Подготовка окружения
+## 1. Локальная разработка
+
+Из корня репозитория:
 
 ```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+
 cd services
-cp .env.example .env
-```
-
-Перед запуском:
-
-- проверьте `MODEL_PATH` и `MODEL_FILENAME`;
-- обязательно замените `GRAFANA_PASS`;
-- не добавляйте `.env` в Git.
-
-## 1. Локальный FastAPI
-
-```bash
-python3.11 -m venv ../.venv
-source ../.venv/bin/activate
-pip install -r ml_service/requirements.txt
-
 bash run_stage1.sh
 ```
 
-Адреса:
+На Windows активация выполняется командой `.venv\Scripts\Activate.ps1`, а сервис можно запустить напрямую:
 
-- Swagger UI: `http://127.0.0.1:8000/docs`
-- readiness: `http://127.0.0.1:8000/service-status`
-- метрики: `http://127.0.0.1:8000/metrics`
+```powershell
+$env:PYTHONPATH = "services"
+.venv\Scripts\python -m uvicorn ml_service.main:app --app-dir services --host 127.0.0.1 --port 8000
+```
 
-Проверка валидным запросом:
+Проверки:
 
 ```bash
-python load_test.py --url http://127.0.0.1:8000/predict --requests 1
+curl --fail http://127.0.0.1:8000/health/live
+curl --fail http://127.0.0.1:8000/health/ready
+python load_test.py --url http://127.0.0.1:8000/predict --requests 8 --concurrency 2
 ```
 
 ## 2. Отдельный Docker-контейнер
 
 ```bash
 cd services
+cp .env.example .env
 bash run_stage2_docker.sh
 ```
 
-Сервис будет доступен на `http://127.0.0.1:8001`. Скрипт самостоятельно проверит наличие `.env`, соберёт образ и запустит контейнер с непривилегированной привязкой к localhost.
-
-Остановка выполняется через `Ctrl+C`, поскольку контейнер запускается с `--rm`.
+Скрипт собирает image и запускает сервис на `http://127.0.0.1:8001` с non-root user, read-only root filesystem, dropped capabilities и resource limits. Остановка — `Ctrl+C`.
 
 ## 3. Полный observability-контур
 
 ```bash
 cd services
+cp .env.example .env
+# установите собственный GRAFANA_PASS
 docker compose up --build -d
 docker compose ps
 ```
-
-Компоненты:
 
 | Компонент | Адрес |
 |---|---|
@@ -71,73 +61,39 @@ docker compose ps
 | Prometheus | `http://127.0.0.1:9090` |
 | Grafana | `http://127.0.0.1:3000` |
 
-Prometheus datasource и dashboard загружаются в Grafana автоматически из `services/grafana/provisioning` и корневого `dashboard.json`.
-
-Проверки:
-
 ```bash
-curl --fail http://127.0.0.1:8002/service-status
-curl --fail http://127.0.0.1:8002/metrics
+curl --fail http://127.0.0.1:8002/health/ready
+python load_test.py --requests 40 --concurrency 4
 curl --fail "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
 ```
 
-## Нагрузочная проверка
+Prometheus хранит семь дней метрик в named volume. Grafana сохраняет локальное состояние, а datasource и dashboard provision автоматически.
+
+## Конфигурация модели
+
+По умолчанию локальный сервис использует:
+
+- `services/models/Sprint2_cb.cbm`;
+- `services/models/model-manifest.json`.
+
+В контейнере пути задаются через `MODEL_PATH` и `MODEL_MANIFEST_PATH` в `.env`. Для нового артефакта создайте новый manifest с тем же schema version, актуальным SHA-256 и поддерживаемым feature contract. Startup завершится ошибкой, если имя, checksum или feature order не совпадают.
+
+## Остановка и диагностика
 
 ```bash
 cd services
-python load_test.py --requests 40 --delay 0.25
-```
-
-Скрипт отправляет корректные POST-запросы к `/predict`, выводит status и latency каждого запроса, а в конце считает mean, p50 и p95. Наличие неуспешных ответов приводит к ненулевому exit code.
-
-Параметры:
-
-```text
---url       endpoint предсказания
---requests  число запросов
---delay     пауза между запросами в секундах
---timeout   timeout одного запроса
-```
-
-## Остановка
-
-```bash
-cd services
+docker compose logs ml_service prometheus grafana
 docker compose down
 ```
 
-Для удаления сохранённого состояния контейнеров используйте `docker compose down --volumes` только осознанно.
+Удаление volumes (`docker compose down --volumes`) стирает историю Prometheus и локальное состояние Grafana.
 
-## Типовые проблемы
+Типовые причины неготовности:
 
-### Модель не загружается
+- model или manifest отсутствует по настроенному пути;
+- SHA-256 не совпадает;
+- порядок признаков артефакта отличается от `PropertyFeatures`;
+- версия CatBoost не может прочитать native artifact;
+- контейнеру не хватает памяти.
 
-Проверьте:
-
-- существует ли файл по `MODEL_PATH`;
-- совпадают ли версии scikit-learn, CatBoost и category-encoders с [requirements](services/ml_service/requirements.txt);
-- доступен ли файл пользователю `app` внутри контейнера.
-
-### API отвечает 422
-
-Сервис строго проверяет список признаков. Используйте payload из `services/load_test.py` как эталон контракта.
-
-### Prometheus не видит сервис
-
-```bash
-cd services
-docker compose ps
-docker compose logs ml_service prometheus
-```
-
-В Prometheus запрос `up{job="ml_service"}` должен вернуть `1`.
-
-### Grafana не показывает dashboard
-
-Проверьте логи и provisioning volumes:
-
-```bash
-cd services
-docker compose logs grafana
-docker compose config
-```
+Точная причина пишется в startup log; наружу внутренние исключения prediction endpoint не возвращает.

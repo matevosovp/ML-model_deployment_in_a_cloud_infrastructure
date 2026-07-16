@@ -33,5 +33,13 @@ docker build -t "${IMAGE_NAME}" -f Dockerfile_ml_service .
 echo "Starting container..."
 docker run --rm --name "${CONTAINER_NAME}" \
   --env-file "${ENV_FILE}" \
+  --init \
+  --read-only \
+  --tmpfs /tmp:size=64m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+  --memory 1g \
+  --cpus 2 \
   -p "${BIND_ADDR}:${HOST_PORT}:${CONTAINER_PORT}" \
   "${IMAGE_NAME}"

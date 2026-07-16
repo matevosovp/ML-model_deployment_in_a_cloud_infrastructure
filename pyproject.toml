@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --cov=ml_service --cov-report=term-missing --cov-fail-under=90"
+pythonpath = ["services"]
+testpaths = ["tests"]
+markers = [
+  "integration: checks the bundled model artifact and full ASGI lifecycle",
+]
+
+[tool.ruff]
+exclude = [".tmp", ".venv", ".venv-audit", "pytest-cache-files-*"]
+line-length = 99
+src = ["services", "tests"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
