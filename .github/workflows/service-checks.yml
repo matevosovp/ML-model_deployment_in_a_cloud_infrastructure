@@ -7,42 +7,105 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: service-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  validate:
+  quality:
+    name: Lint, test, and validate configs
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: services/ml_service/requirements.txt
+          cache-dependency-path: |
+            requirements-dev.txt
+            services/ml_service/requirements.txt
 
-      - name: Install runtime dependencies
-        run: pip install -r services/ml_service/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
 
       - name: Check dependency consistency
-        run: pip check
+        run: python -m pip check
 
-      - name: Check Python syntax and service imports
+      - name: Lint and verify formatting
         run: |
-          python -m compileall -q services/ml_service services/load_test.py
-          PYTHONPATH=services python -c "from ml_service.main import app; assert app.title"
+          python -m ruff check .
+          python -m ruff format --check .
 
-      - name: Check shell scripts
-        run: |
-          bash -n services/run_stage1.sh
-          bash -n services/run_stage2_docker.sh
+      - name: Run unit and bundled-artifact integration tests
+        run: python -m pytest
 
-      - name: Validate configuration files
+      - name: Validate JSON and Docker Compose
         run: |
           python -m json.tool dashboard.json > /dev/null
+          python -m json.tool services/models/model-manifest.json > /dev/null
           cp services/.env.example services/.env
-          cd services
-          docker compose config --quiet
+          docker compose --file services/docker-compose.yaml config --quiet
+
+      - name: Validate Prometheus configuration
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}/services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            --entrypoint /bin/promtool \
+            prom/prometheus:v3.11.3 \
+            check config /etc/prometheus/prometheus.yml
+
+  container:
+    name: Build and smoke-test container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build local image
+        uses: docker/build-push-action@v7
+        with:
+          context: services
+          file: services/Dockerfile_ml_service
+          load: true
+          push: false
+          tags: real-estate-ml-service:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start service and wait for readiness
+        run: |
+          docker run --detach --name real-estate-ml-ci \
+            --read-only \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --publish 127.0.0.1:8000:8000 \
+            real-estate-ml-service:ci
+          timeout 90s bash -c 'until curl --fail --silent http://127.0.0.1:8000/health/ready; do sleep 2; done'
+
+      - name: Exercise prediction through the container boundary
+        run: |
+          payload="$(docker exec real-estate-ml-ci python -c 'import json; from services.ml_service.schemas import EXAMPLE_FEATURES; print(json.dumps({"user_id": 1, "features": EXAMPLE_FEATURES}))')"
+          response="$(curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "${payload}" \
+            http://127.0.0.1:8000/predict)"
+          echo "${response}"
+          grep --quiet '"model_version":"sprint2-catboost-2025-12-27"' <<< "${response}"
+
+      - name: Show service logs
+        if: always()
+        run: docker logs real-estate-ml-ci || true
+
+      - name: Remove test container
+        if: always()
+        run: docker rm --force real-estate-ml-ci || true

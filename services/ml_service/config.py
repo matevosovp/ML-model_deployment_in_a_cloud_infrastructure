@@ -1,49 +1,48 @@
-import os
+from __future__ import annotations
+
 import logging
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
+SERVICES_DIR = Path(__file__).resolve().parents[1]
+MODELS_DIR = SERVICES_DIR / "models"
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-MODELS_DIR = BASE_DIR / "models"
 
-# Имя файла модели. По умолчанию Sprint2_cb.pkl, переопределяется через env при необходимости
-MODEL_FILENAME = os.getenv("MODEL_FILENAME", "Sprint2_cb.pkl")
+def _path_from_env(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    path = Path(value).expanduser() if value else default
+    if not path.is_absolute():
+        path = SERVICES_DIR / path
+    return path.resolve()
 
-# Полный путь к модели. Можно полностью переопределить через env MODEL_PATH
-MODEL_PATH = Path(os.getenv("MODEL_PATH", str(MODELS_DIR / MODEL_FILENAME)))
 
-LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
+def _log_level_from_env() -> int:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        raise ValueError(f"Unsupported LOG_LEVEL: {level_name}")
+    return level
 
-# Список фичей, которые ожидает модель
-REQUIRED_FEATURES = [
-    "floor",
-    "kitchen_area",
-    "living_area",
-    "total_area",
-    "build_year",
-    "latitude",
-    "longitude",
-    "ceiling_height",
-    "floors_total",
-    "area_per_room",
-    "is_first_floor",
-    "building_age",
-    "is_apartment",
-    "ce__building_type_int",
-    "building_age*latitude",
-    "build_year*building_age",
-    "ce__building_type_int*has_elevator",
-    "latitude*longitude",
-    "building_age*longitude",
-    "floors_total*longitude",
-    "build_year*floors_total",
-    "ceiling_height*latitude",
-    "build_year*rooms",
-    "is_first_floor*total_area",
-    "rooms*total_area",
-    "build_year*living_area",
-    "ceiling_height*longitude",
-    "ceiling_height*floors_total",
-    "has_elevator*is_first_floor",
-]
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Runtime configuration resolved independently for every app instance."""
+
+    model_path: Path
+    model_manifest_path: Path
+    log_level: int
+
+    @classmethod
+    def from_env(cls) -> Settings:
+        return cls(
+            model_path=_path_from_env(
+                "MODEL_PATH",
+                MODELS_DIR / "Sprint2_cb.cbm",
+            ),
+            model_manifest_path=_path_from_env(
+                "MODEL_MANIFEST_PATH",
+                MODELS_DIR / "model-manifest.json",
+            ),
+            log_level=_log_level_from_env(),
+        )

@@ -1,239 +1,183 @@
 from __future__ import annotations
 
-import time
 import logging
-from pathlib import Path
-from typing import Any, Dict, Union
+import time
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 
-import pandas as pd
-from fastapi import FastAPI, HTTPException, Body
-from pydantic import BaseModel, Field
-import joblib
-from catboost import CatBoostRegressor
+from fastapi import FastAPI, HTTPException, Response, status
+from prometheus_client import Counter, Gauge, Histogram, Info
 from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import Counter, Histogram
+from starlette.concurrency import run_in_threadpool
 
-from .config import MODEL_PATH, LOG_LEVEL, REQUIRED_FEATURES
-
-
-PREDICT_LATENCY_SECONDS = Histogram(
-    "predict_latency_seconds",
-    "Latency of model prediction in seconds"
+from .config import Settings
+from .model import LoadedModel, load_model
+from .schemas import (
+    LivenessResponse,
+    PredictRequest,
+    PredictResponse,
+    ReadinessResponse,
 )
 
-PREDICTIONS_TOTAL = Counter(
-    "model_predictions_total",
-    "Number of successful model predictions",
+APP_VERSION = "2.0.0"
+
+PREDICTION_DURATION_SECONDS = Histogram(
+    "model_prediction_duration_seconds",
+    "Time spent inside model prediction in seconds",
+)
+PREDICTION_REQUESTS_TOTAL = Counter(
+    "model_prediction_requests_total",
+    "Model prediction attempts grouped by bounded outcome",
+    labelnames=("outcome",),
+)
+MODEL_READY = Gauge(
+    "model_ready",
+    "Whether a validated model artifact is loaded",
+)
+MODEL_INFO = Info(
+    "model",
+    "Loaded model metadata",
 )
 
-
+ModelLoader = Callable[[Settings], LoadedModel]
 logger = logging.getLogger("ml_service")
-logging.basicConfig(level=LOG_LEVEL)
 
 
-def load_model(model_path: Path) -> Any:
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    ext = model_path.suffix.lower()
-
-    if ext in [".pkl", ".joblib"]:
-        return joblib.load(model_path)
-
-    if ext == ".cbm":
-        model = CatBoostRegressor()
-        model.load_model(str(model_path))
-        return model
-
-    raise RuntimeError(f"Unsupported model extension: {ext}")
-
-
-class PredictRequest(BaseModel):
-    user_id: int = Field(..., examples=[123])
-    features: Dict[str, Union[float, int, str, bool]] = Field(
-        ...,
-        examples=[
-            {
-                "floor": 12,
-                "kitchen_area": 13.8,
-                "living_area": 41.2,
-                "total_area": 62.0,
-                "build_year": 2015,
-                "latitude": 59.9343,
-                "longitude": 30.3351,
-                "ceiling_height": 2.85,
-                "floors_total": 25,
-                "area_per_room": 20.67,
-                "is_first_floor": 0,
-                "building_age": 10,
-                "is_apartment": 1,
-                "ce__building_type_int": 3,
-                "building_age*latitude": 599.343,
-                "build_year*building_age": 20150,
-                "ce__building_type_int*has_elevator": 3,
-                "latitude*longitude": 1817.031,
-                "building_age*longitude": 303.351,
-                "floors_total*longitude": 758.3775,
-                "build_year*floors_total": 50375,
-                "ceiling_height*latitude": 170.812,
-                "build_year*rooms": 6045,
-                "is_first_floor*total_area": 0.0,
-                "rooms*total_area": 186.0,
-                "build_year*living_area": 83018.0,
-                "ceiling_height*longitude": 86.455,
-                "ceiling_height*floors_total": 71.25,
-                "has_elevator*is_first_floor": 0
-            }
-        ],
-        description="Признаки одного объекта. Ключи должны совпадать с тем, что ожидает модель",
+def create_app(
+    settings: Settings | None = None,
+    *,
+    model_loader: ModelLoader = load_model,
+    instrument_metrics: bool = True,
+) -> FastAPI:
+    resolved_settings = settings or Settings.from_env()
+    logging.basicConfig(
+        level=resolved_settings.log_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-
-class PredictResponse(BaseModel):
-    user_id: int
-    prediction: float
-
-
-app = FastAPI(
-    title="Real Estate Price ML Service",
-    version="1.0.0",
-    description="Онлайн сервис предсказания цены недвижимости",
-)
-
-Instrumentator().instrument(app).expose(
-    app,
-    endpoint="/metrics",
-    include_in_schema=False,
-)
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    try:
-        model = load_model(MODEL_PATH)
-
-        # Если это MLflow PyFuncModel, добавляем служебный id (не критично, но удобно)
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        MODEL_READY.set(0)
         try:
-            if model.__class__.__name__ == "PyFuncModel" and model.__class__.__module__.startswith("mlflow"):
-                if not hasattr(model, "_model_id"):
-                    model._model_id = "local_pyfunc_model"
+            runtime = await run_in_threadpool(model_loader, resolved_settings)
         except Exception:
-            pass
+            logger.exception("Model startup validation failed")
+            raise
 
-        app.state.model = model
-        logger.info("Model loaded from %s", MODEL_PATH)
-    except Exception:
-        logger.exception("Failed to load model")
-        raise
-
-
-@app.get("/")
-def root():
-    return {"message": "Service is up. Open /docs or /service-status."}
-
-
-@app.get("/service-status")
-def health_check() -> Dict[str, Union[str, bool]]:
-    model_loaded = getattr(app.state, "model", None) is not None
-    return {
-        "status": "ok" if model_loaded else "not_ready",
-        "model_loaded": model_loaded,
-        "model_file": MODEL_PATH.name,
-    }
-
-
-@app.post("/predict", response_model=PredictResponse)
-def predict(
-    req: PredictRequest = Body(
-        ...,
-        examples={
-            "valid_request": {
-                "summary": "Пример корректного запроса",
-                "value": {
-                    "user_id": 123,
-                    "features": {
-                        "floor": 12,
-                        "kitchen_area": 13.8,
-                        "living_area": 41.2,
-                        "total_area": 62.0,
-                        "build_year": 2015,
-                        "latitude": 59.9343,
-                        "longitude": 30.3351,
-                        "ceiling_height": 2.85,
-                        "floors_total": 25,
-                        "area_per_room": 20.67,
-                        "is_first_floor": 0,
-                        "building_age": 10,
-                        "is_apartment": 1,
-                        "ce__building_type_int": 3,
-                        "building_age*latitude": 599.343,
-                        "build_year*building_age": 20150,
-                        "ce__building_type_int*has_elevator": 3,
-                        "latitude*longitude": 1817.031,
-                        "building_age*longitude": 303.351,
-                        "floors_total*longitude": 758.3775,
-                        "build_year*floors_total": 50375,
-                        "ceiling_height*latitude": 170.812,
-                        "build_year*rooms": 6045,
-                        "is_first_floor*total_area": 0.0,
-                        "rooms*total_area": 186.0,
-                        "build_year*living_area": 83018.0,
-                        "ceiling_height*longitude": 86.455,
-                        "ceiling_height*floors_total": 71.25,
-                        "has_elevator*is_first_floor": 0
-                    }
-                },
+        application.state.model = runtime
+        MODEL_READY.set(1)
+        MODEL_INFO.info(
+            {
+                "version": runtime.model_version,
+                "feature_contract": runtime.feature_contract,
+                "sha256": runtime.sha256,
             }
-        },
-    )
-):
-    model = getattr(app.state, "model", None)
-    if model is None:
-        raise HTTPException(status_code=500, detail="Model is not loaded")
-
-    if not req.features:
-        raise HTTPException(status_code=400, detail="features must be non-empty")
-
-    missing = [c for c in REQUIRED_FEATURES if c not in req.features]
-    extra = [c for c in req.features.keys() if c not in REQUIRED_FEATURES]
-
-    if missing or extra:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "missing_features": missing,
-                "extra_features": extra,
-                "required_features_count": len(REQUIRED_FEATURES),
-            },
         )
-
-    try:
-        x = pd.DataFrame([req.features], columns=REQUIRED_FEATURES)
-
-        t0 = time.perf_counter()
-        y_pred = model.predict(x)
-        latency = time.perf_counter() - t0
-
-        if hasattr(y_pred, "__len__"):
-            pred_value = float(y_pred[0])
-        else:
-            pred_value = float(y_pred)
-
-        PREDICT_LATENCY_SECONDS.observe(latency)
-        PREDICTIONS_TOTAL.inc()
-
         logger.info(
-            "Predicted user_id=%s prediction=%.6f latency=%.6fs",
-            req.user_id,
-            pred_value,
-            latency,
+            "Model ready version=%s feature_contract=%s sha256=%s",
+            runtime.model_version,
+            runtime.feature_contract,
+            runtime.sha256,
         )
 
-        return PredictResponse(user_id=req.user_id, prediction=pred_value)
+        try:
+            yield
+        finally:
+            application.state.model = None
+            MODEL_READY.set(0)
 
-    except Exception as exc:
-        logger.exception("Prediction failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Prediction failed inside the model service",
-        ) from exc
+    application = FastAPI(
+        title="Real Estate Price ML Service",
+        version=APP_VERSION,
+        description=(
+            "Typed online inference service with a checksum-verified CatBoost artifact, "
+            "readiness probes, and Prometheus metrics."
+        ),
+        lifespan=lifespan,
+    )
+
+    if instrument_metrics:
+        Instrumentator(
+            excluded_handlers=["/metrics"],
+        ).instrument(application).expose(
+            application,
+            endpoint="/metrics",
+            include_in_schema=False,
+        )
+
+    @application.get("/", tags=["service"])
+    def root() -> dict[str, str]:
+        return {
+            "service": application.title,
+            "version": APP_VERSION,
+            "docs": "/docs",
+            "readiness": "/health/ready",
+        }
+
+    @application.get("/health/live", response_model=LivenessResponse, tags=["health"])
+    def liveness() -> LivenessResponse:
+        return LivenessResponse()
+
+    @application.get(
+        "/health/ready",
+        response_model=ReadinessResponse,
+        tags=["health"],
+    )
+    @application.get(
+        "/service-status",
+        response_model=ReadinessResponse,
+        tags=["health"],
+        deprecated=True,
+        include_in_schema=False,
+    )
+    def readiness(response: Response) -> ReadinessResponse:
+        runtime = getattr(application.state, "model", None)
+        if runtime is None:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return ReadinessResponse(status="not_ready", model_loaded=False)
+
+        return ReadinessResponse(
+            status="ready",
+            model_loaded=True,
+            model_version=runtime.model_version,
+            feature_contract=runtime.feature_contract,
+        )
+
+    @application.post(
+        "/predict",
+        response_model=PredictResponse,
+        tags=["inference"],
+    )
+    def predict(request: PredictRequest) -> PredictResponse:
+        runtime: LoadedModel | None = getattr(application.state, "model", None)
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Model is not ready",
+            )
+
+        started_at = time.perf_counter()
+        try:
+            prediction = runtime.predict(request.features.as_model_input())
+        except Exception as exc:
+            PREDICTION_REQUESTS_TOTAL.labels(outcome="error").inc()
+            logger.exception("Prediction failed user_id=%s", request.user_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Prediction failed inside the model service",
+            ) from exc
+        finally:
+            PREDICTION_DURATION_SECONDS.observe(time.perf_counter() - started_at)
+
+        PREDICTION_REQUESTS_TOTAL.labels(outcome="success").inc()
+        logger.debug("Prediction completed user_id=%s", request.user_id)
+        return PredictResponse(
+            user_id=request.user_id,
+            prediction=prediction,
+            model_version=runtime.model_version,
+        )
+
+    return application
+
+
+app = create_app()

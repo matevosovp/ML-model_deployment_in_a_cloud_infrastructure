@@ -3,41 +3,22 @@ from __future__ import annotations
 import argparse
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any
 
-import requests
+import httpx2
 
-DEFAULT_FEATURES: dict[str, Any] = {
-    "floor": 12,
-    "kitchen_area": 13.8,
-    "living_area": 41.2,
-    "total_area": 62.0,
-    "build_year": 2015,
-    "latitude": 59.9343,
-    "longitude": 30.3351,
-    "ceiling_height": 2.85,
-    "floors_total": 25,
-    "area_per_room": 20.67,
-    "is_first_floor": 0,
-    "building_age": 10,
-    "is_apartment": 1,
-    "ce__building_type_int": 3,
-    "building_age*latitude": 599.343,
-    "build_year*building_age": 20150,
-    "ce__building_type_int*has_elevator": 3,
-    "latitude*longitude": 1817.031,
-    "building_age*longitude": 303.351,
-    "floors_total*longitude": 758.3775,
-    "build_year*floors_total": 50375,
-    "ceiling_height*latitude": 170.812,
-    "build_year*rooms": 6045,
-    "is_first_floor*total_area": 0.0,
-    "rooms*total_area": 186.0,
-    "build_year*living_area": 83018.0,
-    "ceiling_height*longitude": 86.455,
-    "ceiling_height*floors_total": 71.25,
-    "has_elevator*is_first_floor": 0,
-}
+from ml_service.schemas import EXAMPLE_FEATURES
+
+DEFAULT_FEATURES = EXAMPLE_FEATURES
+
+
+@dataclass(frozen=True, slots=True)
+class RequestResult:
+    index: int
+    latency: float
+    error: str | None = None
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -46,41 +27,64 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
+def send_request(client: httpx2.Client, url: str, index: int) -> RequestResult:
+    payload = {"user_id": index + 1, "features": DEFAULT_FEATURES}
+    started = time.perf_counter()
+
+    try:
+        response = client.post(url, json=payload)
+        latency = time.perf_counter() - started
+        response.raise_for_status()
+        body: dict[str, Any] = response.json()
+        if body.get("user_id") != index + 1 or not isinstance(
+            body.get("prediction"), (int, float)
+        ):
+            raise ValueError("response does not match PredictResponse")
+        return RequestResult(index=index, latency=latency)
+    except (httpx2.HTTPError, ValueError) as exc:
+        return RequestResult(
+            index=index,
+            latency=time.perf_counter() - started,
+            error=str(exc),
+        )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Send valid prediction requests to the ML service")
+    parser = argparse.ArgumentParser(
+        description="Send contract-valid prediction requests to the ML service"
+    )
     parser.add_argument("--url", default="http://127.0.0.1:8002/predict")
     parser.add_argument("--requests", type=int, default=40)
-    parser.add_argument("--delay", type=float, default=0.25)
+    parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
 
     if args.requests < 1:
         raise SystemExit("--requests must be positive")
+    if args.concurrency < 1:
+        raise SystemExit("--concurrency must be positive")
 
-    latencies: list[float] = []
-    failures = 0
+    results: list[RequestResult] = []
+    limits = httpx2.Limits(
+        max_connections=args.concurrency,
+        max_keepalive_connections=args.concurrency,
+    )
+    with httpx2.Client(timeout=args.timeout, limits=limits) as client:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            futures = [
+                executor.submit(send_request, client, args.url, index)
+                for index in range(args.requests)
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                if result.error:
+                    print(f"{result.index + 1:03d} failed: {result.error}")
+                else:
+                    print(f"{result.index + 1:03d} status=200 latency={result.latency:.4f}s")
 
-    with requests.Session() as session:
-        for index in range(args.requests):
-            payload = {
-                "user_id": index + 1,
-                "features": DEFAULT_FEATURES,
-            }
-            started = time.perf_counter()
-
-            try:
-                response = session.post(args.url, json=payload, timeout=args.timeout)
-                latency = time.perf_counter() - started
-                response.raise_for_status()
-                latencies.append(latency)
-                print(f"{index + 1:03d} status={response.status_code} latency={latency:.4f}s")
-            except requests.RequestException as exc:
-                failures += 1
-                print(f"{index + 1:03d} failed: {exc}")
-
-            if index + 1 < args.requests:
-                time.sleep(args.delay)
-
+    latencies = [result.latency for result in results if result.error is None]
+    failures = len(results) - len(latencies)
     if latencies:
         print(
             "summary "

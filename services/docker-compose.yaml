@@ -1,3 +1,5 @@
+name: real-estate-ml
+
 services:
   ml_service:
     build:
@@ -7,35 +9,61 @@ services:
       - .env
     ports:
       - "127.0.0.1:8002:8000"
-    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.11.3-distroless
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
     volumes:
       - "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
       ml_service:
         condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:12.3.1
-    env_file:
-      - .env
+    image: grafana/grafana:13.1.0
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS:?copy .env.example to .env and set GRAFANA_PASS}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
     volumes:
+      - grafana_data:/var/lib/grafana
       - "./grafana/provisioning:/etc/grafana/provisioning:ro"
       - "../dashboard.json:/var/lib/grafana/dashboards/real-estate-service.json:ro"
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

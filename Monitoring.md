@@ -1,136 +1,99 @@
 # Мониторинг ML-сервиса
 
-FastAPI экспортирует Prometheus-метрики на `GET /metrics`. Prometheus опрашивает сервис каждые пять секунд, а Grafana автоматически загружает datasource и dashboard при старте Docker Compose.
+FastAPI экспортирует метрики на `GET /metrics`, Prometheus опрашивает сервис каждые пять секунд, а Grafana provision-ит dashboard автоматически.
 
-## Слои наблюдаемости
+## Метрики по слоям
 
-### HTTP-слой
+HTTP-слой от `prometheus-fastapi-instrumentator`:
 
-Метрики предоставляет `prometheus-fastapi-instrumentator`:
+- `http_requests_total{handler,method,status}`;
+- `http_request_duration_seconds_bucket{handler,method}`;
+- request/response size summaries.
 
-- `http_requests_total` — количество запросов по handler, method и status;
-- `http_request_duration_seconds` — распределение времени ответа;
-- `http_request_size_bytes` и `http_response_size_bytes` — размеры запросов и ответов.
+Model-слой:
 
-### ML-слой
+- `model_prediction_duration_seconds` — время только внутри `LoadedModel.predict`;
+- `model_prediction_requests_total{outcome="success|error"}` — bounded outcome label;
+- `model_ready` — `1`, когда checksum и feature contract прошли startup validation;
+- `model_info{version,feature_contract,sha256}` — идентификация artifact.
 
-Метрики определены непосредственно в сервисе:
-
-- `predict_latency_seconds` — время выполнения `model.predict`, без сетевой части;
-- `model_predictions_total` — число успешно выполненных предсказаний.
-
-HTTP latency и model latency разделены намеренно: это помогает отличить медленный инференс от накладных расходов API.
-
-### Process-слой
-
-Стандартный Prometheus client экспортирует:
-
-- `process_cpu_seconds_total`;
-- `process_resident_memory_bytes`;
-- метрики Python garbage collector.
+Process-слой предоставляет CPU, resident memory и Python runtime metrics.
 
 ## Основные PromQL-запросы
 
-RPS:
+RPS только prediction endpoint:
 
 ```promql
-sum(rate(http_requests_total[5m]))
+sum(rate(http_requests_total{job="ml_service",handler="/predict"}[1m]))
 ```
 
-Доля ответов 4xx/5xx:
+Доля HTTP 4xx/5xx:
 
 ```promql
-sum(rate(http_requests_total{status=~"4xx|5xx"}[5m]))
+sum(rate(http_requests_total{job="ml_service",handler="/predict",status=~"4xx|5xx"}[5m]))
 /
-clamp_min(sum(rate(http_requests_total[5m])), 0.001)
+clamp_min(sum(rate(http_requests_total{job="ml_service",handler="/predict"}[5m])), 0.001)
 ```
 
-P95 общей HTTP latency:
+P95 end-to-end HTTP latency:
 
 ```promql
 histogram_quantile(
   0.95,
-  sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+  sum(rate(http_request_duration_seconds_bucket{job="ml_service",handler="/predict"}[5m])) by (le)
 )
 ```
 
-P95 чистого времени инференса:
+P95 чистого inference:
 
 ```promql
 histogram_quantile(
   0.95,
-  sum(rate(predict_latency_seconds_bucket[5m])) by (le)
+  sum(rate(model_prediction_duration_seconds_bucket{job="ml_service"}[5m])) by (le)
 )
 ```
 
-Средняя загрузка одного CPU core за минуту:
+Success ratio модели:
 
 ```promql
-rate(process_cpu_seconds_total[1m]) * 100
-```
-
-Скорость успешных предсказаний:
-
-```promql
-rate(model_predictions_total[5m])
+sum(rate(model_prediction_requests_total{job="ml_service",outcome="success"}[5m]))
+/
+clamp_min(sum(rate(model_prediction_requests_total{job="ml_service"}[5m])), 0.001)
 ```
 
 ## Dashboard
 
-Dashboard содержит пять обзорных панелей:
+`dashboard.json` содержит:
 
-1. CPU usage — rate, а не накопительный CPU counter;
-2. API p95 latency;
-3. 4xx/5xx error rate;
-4. requests per second;
-5. total requests.
+1. model readiness;
+2. prediction request count за пять минут;
+3. inference success ratio;
+4. HTTP error ratio;
+5. CPU и resident memory;
+6. HTTP p95 и model inference p95;
+7. prediction RPS;
+8. model outcomes по bounded label.
 
-Файл: [`dashboard.json`](dashboard.json).
+Запросы фильтруются по `job="ml_service"` и, где необходимо, по `handler="/predict"`, поэтому scrapes `/metrics`, health probes и Swagger не искажают inference SLI.
 
-![Grafana dashboard](dashboard.jpg)
+## Базовые alert rules
 
-## Интерпретация сигналов
+Пороговые значения следует калибровать на реальной нагрузке:
 
-- растут HTTP latency и inference latency — вероятна проблема модели или CPU;
-- растёт HTTP latency при стабильной inference latency — проверять middleware, сеть и контейнер;
-- растёт доля 4xx — изменился клиентский payload или контракт признаков;
-- растёт доля 5xx — проверять model artifact и runtime dependencies;
-- `up{job="ml_service"} == 0` — Prometheus не может получить метрики;
-- RPS есть, но `model_predictions_total` не растёт — запросы не доходят до успешного инференса.
+- `up{job="ml_service"} == 0` или `model_ready == 0` дольше минуты;
+- HTTP 5xx ratio выше 2% пять минут;
+- p95 HTTP latency выше 500 ms десять минут;
+- p95 inference latency выше 300 ms десять минут;
+- outcome `error` растёт при стабильном трафике;
+- resident memory приближается к container limit;
+- CPU устойчиво выше выделенного capacity.
 
-## Базовые алерты
+## Интерпретация
 
-Пороговые значения ниже являются стартовыми и должны уточняться после наблюдения за реальной нагрузкой:
+- одновременно растут HTTP и inference latency — проверять модель/CPU;
+- растёт только HTTP latency — middleware, сеть или saturation worker;
+- растёт 4xx ratio — нарушен client contract;
+- растёт model outcome `error` — runtime/artifact проблема после успешной HTTP validation;
+- HTTP traffic есть, а success counter не растёт — запросы не доходят до успешного inference.
 
-- `up{job="ml_service"} == 0` дольше одной минуты;
-- доля 5xx выше 2% в течение пяти минут;
-- p95 HTTP latency выше 500 ms в течение десяти минут;
-- p95 inference latency выше 300 ms в течение десяти минут;
-- отсутствие успешных предсказаний при ненулевом RPS;
-- устойчивое потребление CPU выше 80% одного core.
-
-## Что пока не измеряется
-
-Техническая доступность не гарантирует качество ML-модели. Для production-контура дополнительно нужны:
-
-- drift входных признаков;
-- распределение предсказаний;
-- доля неизвестных/некорректных категорий;
-- online business metric;
-- версия модели в каждом ответе или trace;
-- сравнение online-данных с reference dataset.
-
-## Проверка контура
-
-```bash
-curl --fail http://127.0.0.1:8002/service-status
-curl --fail http://127.0.0.1:8002/metrics
-curl --fail "http://127.0.0.1:9090/api/v1/query?query=up%7Bjob%3D%22ml_service%22%7D"
-```
-
-Для генерации трафика:
-
-```bash
-cd services
-python load_test.py --requests 40 --delay 0.25
-```
+Technical monitoring не измеряет ML-качество. Для production нужны feature drift, prediction distribution, delayed labels, business metric и reference-data comparison.
